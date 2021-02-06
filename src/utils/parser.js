@@ -41,7 +41,7 @@ const EntityTypes = {
   0xf0: 'Icon',
 };
 
-export const EntitySpriteCounts = {
+const EntitySpriteCounts = {
   Month: 11,
   MonthName: 12,
   Day: 11,
@@ -90,7 +90,33 @@ const decodeRle = (dv, offset, size) => {
   return new DataView(result.buffer.slice(0, ptr * 2));
 };
 
-export const parseWatchface = data => {
+const encodeRle = (dv) => {
+  const result = new DataView(new ArrayBuffer(1e6));
+  let idx = 0;
+  let sz = 0;
+  let prev = -1;
+  for(let i=0;i<dv.byteLength;i+=2) {
+    let color = dv.getUint16(i, true);
+    if ((prev != color && sz > 0) || sz >= 240) {
+      result.setUint16(idx, prev, true);
+      idx += 2;
+      result.setUint8(idx, sz);
+      idx ++;
+      sz = 0;
+    }
+    sz++;
+    prev = color;
+  }
+  if (sz > 0) {
+      result.setUint16(idx, prev, true);
+      idx += 2;
+      result.setUint8(idx, sz);
+      idx ++;
+  }
+  return new DataView(result.buffer.slice(0, idx));
+};
+
+const parseWatchface = data => {
   const parsed = { bg: null, entities: [], sprites: [] };
   const dv = new DataView(data);
   parsed.raw = dv;
@@ -112,6 +138,7 @@ export const parseWatchface = data => {
     const type = dv.getUint8(offset);
     parsed.entities.push({
       index: i,
+      _type: type,
       type: EntityTypes[type] || `Unknown${type.toString(16).padStart(2, '0')}`,
       x: dv.getUint8(offset + 1),
       y: dv.getUint8(offset + 2),
@@ -125,12 +152,16 @@ export const parseWatchface = data => {
     const spriteOffset =
       SpriteDataOffset + dv.getUint32(SpriteOffsetsOffset + i * 4, true);
     const length = dv.getUint16(SpriteSizesOffset + i * 2, true);
-    const type = dv
-      .getUint16(spriteOffset)
+    console.log(length);
+    const _type = dv.getUint16(spriteOffset)
+    const type = _type
       .toString(16)
       .padStart(4, '0');
     parsed.sprites.push({
       index: i,
+      _offset: spriteOffset - SpriteDataOffset,
+      _length: length,
+      _type: type,
       data:
         type === '0821'
           ? decodeRle(dv, spriteOffset + 2, length - 2)
@@ -142,3 +173,56 @@ export const parseWatchface = data => {
 
   return parsed;
 };
+
+const encodeWatchface = (data) => {
+  const dv = new DataView(new ArrayBuffer(1e6));
+
+  dv.setUint8(5, data.flag);
+  dv.setUint8(1, data.entities.length)
+  dv.setUint8(2, data.sprites.length)
+  dv.setUint8(3, data.id)
+
+  dv.setUint8(8, data.bg.spriteWidth)
+  dv.setUint8(9, data.bg.spriteHeight)
+  dv.setUint8(10, data.bg.unk)
+
+  for (let i = 0; i < data.entities.length; i++) {
+    const offset = EntitiesOffset + i * 6;
+    const entity = data.entities[i];
+    dv.setUint8(offset, entity._type);
+    dv.setUint8(offset + 1, entity.x);
+    dv.setUint8(offset + 2, entity.y);
+    dv.setUint8(offset + 3, entity.width);
+    dv.setUint8(offset + 4, entity.height);
+    dv.setUint8(offset + 5, entity.sprite);
+  }
+
+  let idx = 0;
+  for (let i = 0; i < data.sprites.length; i++) {
+    const sprite = data.sprites[i];
+    dv.setUint32(SpriteOffsetsOffset + i * 4, idx, true);
+
+    // type
+    dv.setUint16(SpriteDataOffset + idx, 0x0821);
+    idx += 2;
+
+    //encode RLE
+    let rle = encodeRle(sprite.data);
+    for(let j = 0; j<rle.byteLength; j++) {
+      dv.setUint8(SpriteDataOffset + idx + j, rle.getUint8(j), true);
+    }
+    idx += rle.byteLength;
+    console.log(rle.byteLength + 2);
+
+    // size
+    dv.setUint16(SpriteSizesOffset + i * 2, rle.byteLength + 2, true)
+  }
+
+  return new DataView(dv.buffer.slice(0, SpriteDataOffset + idx ));
+}
+
+module.exports = { 
+  parseWatchface,
+  encodeWatchface,
+  EntitySpriteCounts
+}
